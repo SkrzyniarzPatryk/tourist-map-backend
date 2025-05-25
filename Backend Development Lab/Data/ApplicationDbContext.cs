@@ -1,30 +1,20 @@
-﻿using Microsoft.EntityFrameworkCore;
+﻿// Data/ApplicationDbContext.cs (lub jakkolwiek nazywa się twój DbContext)
+using Microsoft.EntityFrameworkCore;
 using tourist_map_backend.Entities;
 
-namespace tourist_map_backend.Data
+namespace tourist_map_backend.Data // Upewnij się, że namespace jest poprawny
 {
-    public class ApplicationDbContext : DbContext
+    public class ApplicationDbContext : DbContext // Lub IdentityDbContext jeśli używasz Identity
     {
-        public ApplicationDbContext(DbContextOptions<ApplicationDbContext> options) : base(options) { }
+        public ApplicationDbContext(DbContextOptions<ApplicationDbContext> options) : base(options)
+        {
+        }
 
         public DbSet<User> Users { get; set; }
-        public DbSet<Order> Orders { get; set; }
-
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             base.OnModelCreating(modelBuilder);
-
-            // Konfiguracja relacji User -> Order (jeden do wielu)
-            modelBuilder.Entity<User>()
-                .HasMany(u => u.Orders)
-                .WithOne(o => o.User)
-                .HasForeignKey(o => o.UserId)
-                .OnDelete(DeleteBehavior.Restrict);
-
-            modelBuilder.Entity<Order>()
-                .Property(o => o.Amount)
-                .HasPrecision(18, 2);
         }
     }
 }

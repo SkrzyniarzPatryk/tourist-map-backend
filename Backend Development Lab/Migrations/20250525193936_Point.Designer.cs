@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using tourist_map_backend.Data;
 
@@ -11,9 +12,11 @@ using tourist_map_backend.Data;
 namespace tourist_map_backend.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    partial class ApplicationDbContextModelSnapshot : ModelSnapshot
+    [Migration("20250525193936_Point")]
+    partial class Point
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -22,45 +25,19 @@ namespace tourist_map_backend.Migrations
 
             SqlServerModelBuilderExtensions.UseIdentityColumns(modelBuilder);
 
-<<<<<<< HEAD
-            modelBuilder.Entity("tourist_map_backend.Entities.Order", b =>
-=======
             modelBuilder.Entity("tourist_map_backend.Entities.Comment", b =>
->>>>>>> origin/mateusz
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uniqueidentifier");
 
-<<<<<<< HEAD
-                    b.Property<decimal>("Amount")
-                        .HasPrecision(18, 2)
-                        .HasColumnType("decimal(18,2)");
-=======
                     b.Property<string>("Content")
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
->>>>>>> origin/mateusz
 
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("datetime2");
 
-<<<<<<< HEAD
-                    b.Property<string>("Currency")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("Description")
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("PayPalOrderId")
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<int>("Status")
-                        .HasColumnType("int");
-
-                    b.Property<DateTime?>("UpdatedAt")
-=======
                     b.Property<Guid>("PointId")
                         .HasColumnType("uniqueidentifier");
 
@@ -119,7 +96,6 @@ namespace tourist_map_backend.Migrations
                         .HasColumnType("int");
 
                     b.Property<DateTime>("UpdatedAt")
->>>>>>> origin/mateusz
                         .HasColumnType("datetime2");
 
                     b.Property<Guid>("UserId")
@@ -129,11 +105,7 @@ namespace tourist_map_backend.Migrations
 
                     b.HasIndex("UserId");
 
-<<<<<<< HEAD
-                    b.ToTable("Orders");
-=======
                     b.ToTable("Points");
->>>>>>> origin/mateusz
                 });
 
             modelBuilder.Entity("tourist_map_backend.Entities.User", b =>
@@ -152,9 +124,6 @@ namespace tourist_map_backend.Migrations
                     b.Property<string>("ExternalProvider")
                         .HasColumnType("nvarchar(max)");
 
-                    b.Property<bool>("IsPremium")
-                        .HasColumnType("bit");
-
                     b.Property<string>("PasswordHash")
                         .HasColumnType("nvarchar(max)");
 
@@ -168,17 +137,10 @@ namespace tourist_map_backend.Migrations
                     b.ToTable("Users");
                 });
 
-<<<<<<< HEAD
-            modelBuilder.Entity("tourist_map_backend.Entities.Order", b =>
-                {
-                    b.HasOne("tourist_map_backend.Entities.User", "User")
-                        .WithMany("Orders")
-=======
             modelBuilder.Entity("tourist_map_backend.Entities.Comment", b =>
                 {
                     b.HasOne("tourist_map_backend.Entities.User", "User")
                         .WithMany()
->>>>>>> origin/mateusz
                         .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
@@ -186,11 +148,6 @@ namespace tourist_map_backend.Migrations
                     b.Navigation("User");
                 });
 
-<<<<<<< HEAD
-            modelBuilder.Entity("tourist_map_backend.Entities.User", b =>
-                {
-                    b.Navigation("Orders");
-=======
             modelBuilder.Entity("tourist_map_backend.Entities.Point", b =>
                 {
                     b.HasOne("tourist_map_backend.Entities.User", "User")
@@ -200,7 +157,6 @@ namespace tourist_map_backend.Migrations
                         .IsRequired();
 
                     b.Navigation("User");
->>>>>>> origin/mateusz
                 });
 #pragma warning restore 612, 618
         }

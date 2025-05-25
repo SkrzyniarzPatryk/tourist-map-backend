@@ -20,7 +20,7 @@ namespace Backend_Development_Lab.Dtos
     public class LoginDto
     {
         [Required]
-        public required string Email { get; set; } // Może być Username lub Email
+        public required string Login { get; set; } // Może być Username lub Email
 
         [Required]
         public required string Password { get; set; }
@@ -29,5 +29,11 @@ namespace Backend_Development_Lab.Dtos
     public class LoginResponseDto
     {
         public required string Token { get; set; }
+    }
+    public class UserProfileDto
+    {
+        public Guid Id { get; set; }
+        public string? Username { get; set; }
+        public required string Email { get; set; }
     }
 }

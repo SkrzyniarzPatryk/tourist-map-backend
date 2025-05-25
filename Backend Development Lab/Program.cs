@@ -1,41 +1,3 @@
-//using Backend_Development_Lab.Interfaces;
-//using System.Text;
-//using Backend_Development_Lab.Middleware;
-//using Backend_Development_Lab.Services;
-//using Microsoft.AspNetCore.Authentication.JwtBearer;
-//using Microsoft.IdentityModel.Tokens;
-
-//var builder = WebApplication.CreateBuilder(args);
-
-//// Add services to the container.
-
-//builder.Services.AddControllers();
-//// Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
-//builder.Services.AddEndpointsApiExplorer();
-//builder.Services.AddSwaggerGen();
-
-//var app = builder.Build();
-
-//app.UseMiddleware<ApiKeyMiddleware>();
-
-//// Configure the HTTP request pipeline.
-//if (app.Environment.IsDevelopment())
-//{
-//    app.UseSwagger();
-//    app.UseSwaggerUI();
-//}
-
-//app.UseHttpsRedirection();
-
-//app.UseAuthorization();
-
-//app.MapControllers();
-
-//app.Run();
-
-
-
-//==================================
 using Backend_Development_Lab.Interfaces;
 using Backend_Development_Lab.Middleware;
 using Backend_Development_Lab.Services; // Dodaj using dla Services
@@ -45,6 +7,8 @@ using System.Text; // Dodaj using
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.Google;
 using Microsoft.Extensions.Options;
+using Microsoft.EntityFrameworkCore;
+using tourist_map_backend.Data;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -81,7 +45,20 @@ builder.Services.AddSwaggerGen(options =>
 });
 
 // Rejestracja serwisu u¿ytkowników jako Singleton (bo u¿ywa statycznej listy)
-builder.Services.AddSingleton<IUserService, UserService>();
+builder.Services.AddScoped<IUserService, UserService>();
+
+//Ustawienia CORS
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("AllowFrontend", policy =>
+    {
+        policy.WithOrigins("https://localhost:5173")
+              .AllowAnyHeader()
+              .AllowAnyMethod()
+              .AllowCredentials(); // KLUCZOWE DLA COOKIES
+    });
+});
+
 
 // --- Konfiguracja Uwierzytelniania JWT ---
 builder.Services.AddAuthentication(options =>
@@ -112,6 +89,21 @@ builder.Services.AddAuthentication(options =>
 {
     options.RequireHttpsMetadata = builder.Environment.IsProduction(); // W produkcji ustaw na true
     options.SaveToken = true;
+    
+    //Event który zapisuje token
+    options.Events = new JwtBearerEvents
+    {
+        OnMessageReceived = context =>
+        {
+            var accessToken = context.Request.Cookies["access_token"];
+            if (!string.IsNullOrEmpty(accessToken))
+            {
+                context.Token = accessToken;
+            }
+            return Task.CompletedTask;
+        }
+    };
+
     options.TokenValidationParameters = new TokenValidationParameters
     {
         ValidateIssuerSigningKey = true,
@@ -123,6 +115,15 @@ builder.Services.AddAuthentication(options =>
         ValidateLifetime = true, // Sprawdza, czy token nie wygas³
         ClockSkew = TimeSpan.Zero // Brak tolerancji czasowej przy sprawdzaniu wygaœniêcia
     };
+
+    //Opcje które mo¿e s¹ potrzebne do tokena w cookie>?
+    //options.TokenValidationParameters = new TokenValidationParameters
+    //{
+    //    ValidateIssuerSigningKey = true,
+    //    IssuerSigningKey = new SymmetricSecurityKey(Encoding.ASCII.GetBytes("your_secret_key")),
+    //    ValidateIssuer = false,
+    //    ValidateAudience = false,
+    //};
 })
 .AddGoogle(options =>
 {
@@ -194,6 +195,10 @@ builder.Services.AddSingleton<IPaymentService, PaymentService>();
 // Rejestracja Autoryzacji (ju¿ pewnie masz, ale upewnij siê)
 builder.Services.AddAuthorization();
 
+//Pobieranie connection str i rejestracja DbContext
+var connectionString = builder.Configuration.GetConnectionString("DefaultConnection") ?? throw new InvalidOperationException("Connection string 'DefaultConnection' not found.");
+builder.Services.AddDbContext<ApplicationDbContext>(options =>  options.UseSqlServer(connectionString));
+
 
 var app = builder.Build();
 
@@ -215,6 +220,9 @@ if (app.Environment.IsDevelopment())
 app.UseHttpsRedirection();
 
 app.UseRouting();// Routing musi byæ przed Authentication/Authorization
+
+//uzywanie cors
+app.UseCors("AllowFrontend");
 
 // WA¯NE: UseAuthentication musi byæ przed UseAuthorization
 app.UseAuthentication(); // Odpowiada za odczytanie tokenu i ustawienie u¿ytkownika

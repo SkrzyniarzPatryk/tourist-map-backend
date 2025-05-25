@@ -3,13 +3,13 @@ using System.Security.Claims;
 using System.Text;
 using Backend_Development_Lab.Dtos;
 using Backend_Development_Lab.Interfaces;
-using Backend_Development_Lab.Models;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.Google;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.IdentityModel.Tokens;
+using tourist_map_backend.Entities;
 
 namespace Backend_Development_Lab.Controllers
 {
@@ -19,301 +19,260 @@ namespace Backend_Development_Lab.Controllers
     {
         private readonly IUserService _userService;
         private readonly IConfiguration _configuration;
+        // private readonly ApplicationDbContext _dbContext; // Możesz wstrzyknąć, jeśli potrzebujesz bezpośredniego dostępu
 
-        public AuthController(IUserService userService, IConfiguration configuration)
+        public AuthController(IUserService userService, IConfiguration configuration /*, ApplicationDbContext dbContext*/)
         {
             _userService = userService;
             _configuration = configuration;
+            // _dbContext = dbContext;
         }
 
-        [HttpPost("register")]
-        [AllowAnonymous]
-        public async Task<IActionResult> Register([FromBody] RegisterDto registerDto)
-        {
-            if (!ModelState.IsValid)
-            {
-                return BadRequest(ModelState);
-            }
-
-            //var existingUserByUsername = await _userService.GetUserByUsernameAsync(registerDto.Username);
-            //if (existingUserByUsername != null)
-            //{
-            //    return Conflict("Username already exists.");
-            //}
-
-            var existingUserByEmail = await _userService.GetUserByEmailAsync(registerDto.Email);
-            if (existingUserByEmail != null)
-            {
-                return Conflict("Email already exists.");
-            }
-
-            var newUser = await _userService.RegisterUserAsync(registerDto.Username, registerDto.Email, registerDto.Password);
-
-            if (newUser == null)
-            {
-                return StatusCode(StatusCodes.Status500InternalServerError, "Failed to register user.");
-            }
-
-            // return CreatedAtAction(nameof(GetUser), new { id = newUser.Id }, newUser);
-            return Ok(new { message = "User registered successfully" });
-        }
-
-        [HttpPost("login")]
-        [AllowAnonymous]
-        public async Task<IActionResult> Login([FromBody] LoginDto loginDto)
-        {
-            if (!ModelState.IsValid)
-            {
-                return BadRequest(ModelState);
-            }
-
-            User? user = await _userService.GetUserByEmailAsync(loginDto.Email);
-
-            if (user == null)
-            {
-                return Unauthorized("Invalid credentials.");
-            }
-
-            bool isPasswordValid = BCrypt.Net.BCrypt.Verify(loginDto.Password, user.PasswordHash);
-
-            if (!isPasswordValid)
-            {
-                return Unauthorized("Invalid credentials.");
-            }
-
-            var token = GenerateJwtToken(user);
-            return Ok(new LoginResponseDto { Token = token });
-        }
-
-        [HttpGet("list")]
-        [AllowAnonymous]
-        public async Task<IActionResult> GetAllUsers()
-        {
-            var users = await _userService.GetAllUsersAsync();
-            return Ok(users);
-        }
-
-        [HttpGet("external-login")]
-        [AllowAnonymous]
-        public IActionResult ExternalLogin([FromQuery] string provider, [FromQuery] string? returnUrl = null)
-        {
-            // Sprawdź, czy dostawca jest obsługiwany (na razie tylko Google)
-            if (string.IsNullOrEmpty(provider) || !provider.Equals(GoogleDefaults.AuthenticationScheme, StringComparison.OrdinalIgnoreCase))
-            {
-                return BadRequest("Unsupported external provider.");
-            }
-
-            // Ścieżka, na którą użytkownik zostanie przekierowany w naszej aplikacji
-            // PO udanym logowaniu u dostawcy zewnętrznego.
-            // Tutaj middleware przechwyci żądanie i wymieni kod na token.
-            // My następnie obsłużymy to w ExternalLoginCallback.
-            var redirectUrl = Url.Action(nameof(ExternalLoginCallback), "Auth", new { ReturnUrl = returnUrl });
-
-            // Właściwości przekazywane do dostawcy zewnętrznego
-            var properties = new AuthenticationProperties
-            {
-                RedirectUri = redirectUrl, // Gdzie Google ma odesłać użytkownika PO AUTORYZACJI
-                // Można tu dodać inne właściwości, np. do przekazania stanu
-            };
-
-            // Wywołaj wyzwanie dla schematu Google.
-            // To spowoduje przekierowanie użytkownika na stronę logowania Google.
-            return Challenge(properties, GoogleDefaults.AuthenticationScheme);
-        }
-
-        // 2. Endpoint obsługujący callback od dostawcy zewnętrznego
-        //    Ścieżka tego endpointu MUSI pasować do jednej z "Authorized redirect URIs"
-        //    skonfigurowanych w Google Cloud Console ORAZ do ścieżki,
-        //    na którą nasłuchuje middleware Google (domyślnie /signin-google).
-        //    My użyjemy JAWNEGO callbacku zdefiniowanego w ExternalLogin.
-        [HttpGet("external-callback")]
-        [AllowAnonymous] // Middleware samo w sobie uwierzytelnia na podstawie ciasteczka
-        public async Task<IActionResult> ExternalLoginCallback([FromQuery] string? error, string? returnUrl = null)
-        {
-            if (!string.IsNullOrEmpty(error))
-            {
-                return BadRequest(error);
-            }
-            // Pobierz informacje o użytkowniku z zewnętrznego ciasteczka uwierzytelniającego
-            // To ciasteczko zostało utworzone przez middleware Google po udanym logowaniu
-            // i ustawione jako DefaultSignInScheme (CookieAuthenticationDefaults.AuthenticationScheme)
-            var authenticateResult = await HttpContext.AuthenticateAsync(CookieAuthenticationDefaults.AuthenticationScheme);
-
-            if (!authenticateResult.Succeeded || authenticateResult?.Principal == null)
-            {
-                // Coś poszło nie tak podczas logowania zewnętrznego
-                return BadRequest("External authentication failed.");
-                // Można dodać logowanie błędu: authenticateResult?.Failure?.Message
-            }
-
-            var accessToken = authenticateResult.Properties.GetTokenValue("access_token");
-            var refreshToken = authenticateResult.Properties.GetTokenValue("refresh_token");
-            
-
-            if (!string.IsNullOrEmpty(accessToken))
-            {
-                using var httpClient = new HttpClient();
-                httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken);
-                var userInfoResponse = await httpClient.GetAsync("https://www.googleapis.com/oauth2/v3/userinfo");
-
-                if (userInfoResponse.IsSuccessStatusCode)
-                {
-                    var userInfoJson = await userInfoResponse.Content.ReadAsStringAsync();
-                    Console.WriteLine($"User Info from Google: {userInfoJson}");
-                }
-                else
-                {
-                    Console.WriteLine($"Failed to get user info: {userInfoResponse.StatusCode}");
-                }
-            }
-            var idToken = authenticateResult.Properties.GetTokenValue("id_token");
-            Console.WriteLine($"Access Token: {accessToken}");
-            Console.WriteLine($"ID Token: {idToken}"); // Nie powinien być już null!
-            if (!string.IsNullOrEmpty(idToken))
-            {
-                try // Dobrze jest dodać try-catch wokół operacji na tokenach
-                {
-                    var handler = new JwtSecurityTokenHandler();
-                    // Sprawdź, czy token można odczytać (bez walidacji na tym etapie,
-                    // bo został już zweryfikowany przez middleware Google)
-                    if (handler.CanReadToken(idToken))
-                    {
-                        var jwtToken1 = handler.ReadJwtToken(idToken);
-
-                        Console.WriteLine("Decoded ID Token Claims:");
-                        foreach (var claim in jwtToken1.Claims)
-                        {
-                            Console.WriteLine($"{claim.Type}: {claim.Value}");
-                            // Tutaj możesz użyć tych claimów, np. claim.Type == "picture"
-                        }
-
-                        // Przykład pobrania konkretnego claima:
-                        var pictureClaim = jwtToken1.Claims.FirstOrDefault(c => c.Type == "picture");
-                        if (pictureClaim != null)
-                        {
-                            Console.WriteLine($"User Picture URL: {pictureClaim.Value}");
-                            // Możesz zapisać ten URL w swoim obiekcie User
-                        }
-                    }
-                    else
-                    {
-                        Console.WriteLine("Cannot read the ID Token.");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    // Loguj błąd dekodowania
-                    Console.WriteLine($"Error decoding ID Token: {ex.Message}");
-                    // Rozważ, czy kontynuować, czy zwrócić błąd
-                }
-            }
-
-            //===================
-
-
-
-
-            // Pobierz oświadczenia (claims) od zewnętrznego dostawcy
-            var externalPrincipal = authenticateResult.Principal;
-            Console.WriteLine($"Decoded Token: {externalPrincipal}");
-            var externalProvider = externalPrincipal.FindFirstValue(ClaimTypes.AuthenticationMethod) ?? externalPrincipal.Identity?.AuthenticationType; // Powinno być np. "Google"
-            var externalUserId = externalPrincipal.FindFirstValue(ClaimTypes.NameIdentifier); // Unikalny ID użytkownika u dostawcy
-            var email = externalPrincipal.FindFirstValue(ClaimTypes.Email);
-            var username = externalPrincipal.FindFirstValue(ClaimTypes.Name) ?? email?.Split('@')[0]; // Użyj imienia lub części emaila jako username
-
-            if (string.IsNullOrEmpty(externalUserId) || string.IsNullOrEmpty(email) || string.IsNullOrEmpty(externalProvider) || string.IsNullOrEmpty(username))
-            {
-                // Dostawca nie zwrócił wymaganych informacji
-                return BadRequest("Could not retrieve required information from external provider.");
-            }
-
-            // Znajdź lub zarejestruj użytkownika w swoim systemie
-            var user = await _userService.GetUserByExternalIdAsync(externalProvider, externalUserId);
-
-            if (user == null)
-            {
-                // Użytkownik loguje się po raz pierwszy przez tego dostawcę
-                // Sprawdź, czy email nie jest już zajęty przez konto lokalne (opcjonalne, zależy od logiki biznesowej)
-                var existingLocalUser = await _userService.GetUserByEmailAsync(email);
-                if (existingLocalUser != null)
-                {
-                    // Można zwrócić błąd, albo spróbować połączyć konta (bardziej skomplikowane)
-                    return Conflict($"An account with email {email} already exists. Please log in using your password or link your accounts.");
-                }
-
-
-                // Zarejestruj nowego użytkownika bez hasła
-                user = await _userService.RegisterUserAsync(username, email, null, externalProvider, externalUserId);
-                if (user == null)
-                {
-                    // Problem z rejestracją
-                    return StatusCode(StatusCodes.Status500InternalServerError, "Could not register the user.");
-                }
-            }
-
-            // W tym momencie mamy użytkownika (istniejącego lub nowo zarejestrowanego)
-            // Generujemy dla niego nasz własny token JWT
-            var jwtToken = GenerateJwtToken(user); // Użyj istniejącej metody
-
-            // WAŻNE: Wyloguj użytkownika z tymczasowego schematu ciasteczkowego
-            await HttpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
-
-            // Zwróć token JWT do klienta (np. w ciele odpowiedzi)
-            // Klient (np. SPA) powinien zapisać ten token i używać go do dalszych żądań API
-            return Ok(new LoginResponseDto { Token = jwtToken });
-
-            // Opcjonalnie: Jeśli był podany returnUrl, można by przekierować użytkownika
-            // w aplikacji klienckiej (np. SPA) na ten URL, przekazując token
-            // np. przez parametr query (?token=...) lub fragment (#token=...),
-            // ale zwracanie go w ciele jest często bezpieczniejsze dla API.
-            // if (!string.IsNullOrEmpty(returnUrl) && Url.IsLocalUrl(returnUrl))
-            // {
-            //     // Przekierowanie w stylu SPA - wymaga obsługi po stronie klienta
-            //     // return Redirect($"{returnUrl}?token={jwtToken}");
-            // }
-        }
-    
+        // Metoda generująca token JWT (bez zmian, jeśli już działała poprawnie)
         private string GenerateJwtToken(User user)
         {
             var jwtSettings = _configuration.GetSection("Jwt");
             var securityKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSettings["Key"] ?? throw new InvalidOperationException("JWT Key not configured")));
             var credentials = new SigningCredentials(securityKey, SecurityAlgorithms.HmacSha256);
 
-            var claims = new[]
+            var claims = new List<Claim> // Użyj List<Claim> dla elastyczności
             {
                 new Claim(JwtRegisteredClaimNames.Sub, user.Id.ToString()),
-                new Claim(JwtRegisteredClaimNames.Name, user.Username),
                 new Claim(JwtRegisteredClaimNames.Email, user.Email),
                 new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
             };
+
+            if (!string.IsNullOrEmpty(user.Username))
+            {
+                claims.Add(new Claim(JwtRegisteredClaimNames.Name, user.Username));
+            }
+            // Możesz dodać inne potrzebne claimy, np. role
 
             var token = new JwtSecurityToken(
                 issuer: jwtSettings["Issuer"],
                 audience: jwtSettings["Audience"],
                 claims: claims,
-                expires: DateTime.UtcNow.AddHours(1),
+                expires: DateTime.UtcNow.AddMinutes(Convert.ToDouble(jwtSettings["TokenLifetimeMinutes"] ?? "15")), // Odczytaj czas życia z konfiguracji
                 signingCredentials: credentials);
 
             return new JwtSecurityTokenHandler().WriteToken(token);
         }
 
+        // Endpoint rejestracji (dostosowany do zwracania danych użytkownika i ustawiania ciasteczka)
+        [HttpPost("register")]
+        [AllowAnonymous]
+        public async Task<IActionResult> Register([FromBody] RegisterDto registerDto)
+        {
+            if (!ModelState.IsValid) return BadRequest(ModelState);
+
+            var existingUser = await _userService.GetUserByEmailAsync(registerDto.Email);
+            if (existingUser != null) return Conflict("Email already exists.");
+
+            if (!string.IsNullOrEmpty(registerDto.Username))
+            {
+                var existingUserByUsername = await _userService.GetUserByUsernameAsync(registerDto.Username);
+                if (existingUserByUsername != null) return Conflict("Username already exists.");
+            }
+
+
+            var newUser = await _userService.RegisterUserAsync(registerDto.Username, registerDto.Email, registerDto.Password);
+            if (newUser == null) return StatusCode(StatusCodes.Status500InternalServerError, "Failed to register user.");
+
+            // Użytkownik zarejestrowany, teraz go zaloguj (ustaw ciasteczko i zwróć dane)
+            var token = GenerateJwtToken(newUser);
+            Response.Cookies.Append("access_token", token, new CookieOptions
+            {
+                HttpOnly = true,
+                Secure = _configuration.GetValue<bool?>("CookieSettings:Secure") ?? !HttpContext.Request.Host.Host.Contains("localhost"), // Secure w produkcji
+                SameSite = (SameSiteMode)Enum.Parse(typeof(SameSiteMode), _configuration.GetValue<string?>("CookieSettings:SameSite") ?? "Lax"),
+                Expires = DateTime.UtcNow.AddMinutes(Convert.ToDouble(_configuration.GetValue<string?>("CookieSettings:ExpiresMinutes") ?? _configuration.GetValue<string?>("Jwt:TokenLifetimeMinutes") ?? "15")),
+                Path = "/"
+            });
+
+            // Zwróć dane użytkownika, aby frontend wiedział, że jest zalogowany
+            return Ok(new UserProfileDto // Stwórz DTO dla profilu użytkownika
+            {
+                Id = newUser.Id,
+                Username = newUser.Username,
+                Email = newUser.Email
+            });
+        }
+
+
+        // Endpoint logowania (dostosowany do ustawiania ciasteczka i zwracania danych użytkownika)
+        [HttpPost("login")]
+        [AllowAnonymous]
+        public async Task<IActionResult> Login([FromBody] LoginDto loginDto)
+        {
+            if (!ModelState.IsValid) return BadRequest(ModelState);
+
+            User? user = await _userService.GetUserByUsernameAsync(loginDto.Login)
+                         ?? await _userService.GetUserByEmailAsync(loginDto.Login);
+
+            if (user == null || user.PasswordHash == null || !BCrypt.Net.BCrypt.Verify(loginDto.Password, user.PasswordHash))
+            {
+                return Unauthorized("Invalid credentials.");
+            }
+
+            var token = GenerateJwtToken(user);
+            Response.Cookies.Append("access_token", token, new CookieOptions
+            {
+                HttpOnly = true,
+                Secure = _configuration.GetValue<bool?>("CookieSettings:Secure") ?? !HttpContext.Request.Host.Host.Contains("localhost"),
+                SameSite = (SameSiteMode)Enum.Parse(typeof(SameSiteMode), _configuration.GetValue<string?>("CookieSettings:SameSite") ?? "Lax"),
+                Expires = DateTime.UtcNow.AddMinutes(Convert.ToDouble(_configuration.GetValue<string?>("CookieSettings:ExpiresMinutes") ?? _configuration.GetValue<string?>("Jwt:TokenLifetimeMinutes") ?? "15")),
+                Path = "/"
+            });
+
+            return Ok(new UserProfileDto
+            {
+                Id = user.Id,
+                Username = user.Username,
+                Email = user.Email
+            });
+        }
+
+        // Endpoint do wylogowania (usuwa ciasteczko)
+        [HttpPost("logout")]
+        [Authorize] // Tylko zalogowany użytkownik może się wylogować
+        public IActionResult Logout()
+        {
+            // Usuń ciasteczko poprzez ustawienie go z przeszłą datą wygaśnięcia
+            Response.Cookies.Delete("access_token", new CookieOptions
+            {
+                HttpOnly = true,
+                Secure = _configuration.GetValue<bool?>("CookieSettings:Secure") ?? !HttpContext.Request.Host.Host.Contains("localhost"),
+                SameSite = (SameSiteMode)Enum.Parse(typeof(SameSiteMode), _configuration.GetValue<string?>("CookieSettings:SameSite") ?? "Lax"),
+                Path = "/"
+                // Expires nie jest potrzebne przy Delete, ale upewnienie się, że opcje są takie same, jest dobrą praktyką
+            });
+            return Ok(new { message = "Logged out successfully." });
+        }
+
+        // Endpoint do sprawdzania statusu zalogowania i pobierania danych użytkownika
         [HttpGet("me")]
-        [Authorize]
+        [Authorize] // Wymaga ważnego ciasteczka JWT
         public async Task<IActionResult> GetMyInfo()
         {
-            var userIdClaim = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            if (userIdClaim == null || !Guid.TryParse(userIdClaim, out Guid userId))
+            // ID użytkownika jest odczytywane z claimów w tokenie (dzięki [Authorize])
+            var userIdString = User.FindFirstValue(ClaimTypes.NameIdentifier); // lub JwtRegisteredClaimNames.Sub
+            if (string.IsNullOrEmpty(userIdString) || !Guid.TryParse(userIdString, out Guid userId))
             {
-                return Unauthorized("Invalid token.");
+                return Unauthorized("Invalid token data.");
             }
 
-            var user = await _userService.GetUserByIdAsync(userId);
+            var user = await _userService.GetUserByIdAsync(userId); // Pobierz aktualne dane z bazy
             if (user == null)
             {
-                return NotFound("User not found.");
+                // Użytkownik mógł zostać usunięty, a token jest jeszcze ważny
+                // Wyloguj go (usuń ciasteczko)
+                Response.Cookies.Delete("access_token", new CookieOptions { /* ... opcje jak w Logout ... */ Path = "/" });
+                return Unauthorized("User not found.");
             }
 
-            return Ok(new { user.Id, user.Username, user.Email });
+            return Ok(new UserProfileDto
+            {
+                Id = user.Id,
+                Username = user.Username,
+                Email = user.Email
+            });
+        }
+
+
+        // Endpointy logowania zewnętrznego (external-login, external-callback)
+        // W ExternalLoginCallback, po pomyślnym uwierzytelnieniu Google i znalezieniu/rejestracji użytkownika:
+        // Zamiast zwracać token JWT w ciele, ustaw ciasteczko i zwróć dane użytkownika lub przekieruj
+        [HttpGet("external-login")]
+        [AllowAnonymous]
+        public IActionResult ExternalLogin([FromQuery] string provider, [FromQuery] string? returnUrl = null)
+        {
+            if (string.IsNullOrEmpty(provider) || !provider.Equals(GoogleDefaults.AuthenticationScheme, StringComparison.OrdinalIgnoreCase))
+            {
+                return BadRequest("Unsupported external provider.");
+            }
+            // redirectUrl powinien teraz wskazywać na /api/auth/external-callback
+            var redirectUrl = Url.Action(nameof(ExternalLoginCallback), "Auth", new { ReturnUrl = returnUrl });
+            var properties = new AuthenticationProperties { RedirectUri = redirectUrl };
+            return Challenge(properties, GoogleDefaults.AuthenticationScheme);
+        }
+
+        [HttpGet("external-callback")]
+        [AllowAnonymous]
+        public async Task<IActionResult> ExternalLoginCallback(string? error, string? returnUrl = null)
+        {
+            if (!string.IsNullOrEmpty(error))
+            {
+                // Przekieruj na stronę błędu w React lub zwróć błąd API
+                // Np. return Redirect($"http://localhost:5173/login-error?message={error}");
+                return BadRequest(new { message = "External login failed.", error = error });
+            }
+
+            var authenticateResult = await HttpContext.AuthenticateAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+            if (!authenticateResult.Succeeded || authenticateResult?.Principal == null)
+            {
+                // return Redirect($"http://localhost:5173/login-error?message=auth_failed");
+                return BadRequest(new { message = "External authentication failed." });
+            }
+
+            var externalPrincipal = authenticateResult.Principal;
+            var externalProvider = externalPrincipal.FindFirstValue(ClaimTypes.AuthenticationMethod) ?? externalPrincipal.Identity?.AuthenticationType;
+            var externalUserId = externalPrincipal.FindFirstValue(ClaimTypes.NameIdentifier);
+            var email = externalPrincipal.FindFirstValue(ClaimTypes.Email);
+            var username = externalPrincipal.FindFirstValue(ClaimTypes.Name) ?? email?.Split('@')[0]; // Prosta heurystyka dla nazwy użytkownika
+
+            // ... (walidacja danych z externalPrincipal) ...
+            if (string.IsNullOrEmpty(externalUserId) || string.IsNullOrEmpty(email) /* ... */)
+            {
+                // return Redirect($"http://localhost:5173/login-error?message=missing_info");
+                return BadRequest(new { message = "Could not retrieve required information from external provider." });
+            }
+
+
+            User? user = await _userService.GetUserByExternalIdAsync(externalProvider!, externalUserId);
+            if (user == null)
+            {
+                // Sprawdź konflikt email, jeśli użytkownik z tym emailem już istnieje lokalnie
+                var existingLocalUser = await _userService.GetUserByEmailAsync(email);
+                if (existingLocalUser != null && string.IsNullOrEmpty(existingLocalUser.ExternalId)) // Ma email, ale nie jest to konto zewnętrzne
+                {
+                    // return Redirect($"http://localhost:5173/login-error?message=email_conflict");
+                    return Conflict(new { message = $"An account with email {email} already exists. Please log in using your local credentials or link your accounts." });
+                }
+                user = await _userService.RegisterUserAsync(username!, email, null, externalProvider, externalUserId);
+            }
+
+            if (user == null)
+            {
+                // return Redirect($"http://localhost:5173/login-error?message=registration_failed");
+                return StatusCode(StatusCodes.Status500InternalServerError, new { message = "Could not process external user." });
+            }
+
+            // Użytkownik znaleziony/zarejestrowany, teraz go zaloguj (ustaw ciasteczko JWT)
+            var token = GenerateJwtToken(user);
+            Response.Cookies.Append("access_token", token, new CookieOptions
+            {
+                HttpOnly = true,
+                Secure = _configuration.GetValue<bool?>("CookieSettings:Secure") ?? !HttpContext.Request.Host.Host.Contains("localhost"),
+                SameSite = (SameSiteMode)Enum.Parse(typeof(SameSiteMode), _configuration.GetValue<string?>("CookieSettings:SameSite") ?? "Lax"),
+                Expires = DateTime.UtcNow.AddMinutes(Convert.ToDouble(_configuration.GetValue<string?>("CookieSettings:ExpiresMinutes") ?? _configuration.GetValue<string?>("Jwt:TokenLifetimeMinutes") ?? "15")),
+                Path = "/"
+            });
+
+            // Wyloguj z tymczasowego ciasteczka OAuth
+            await HttpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+
+            // Zamiast zwracać token, możesz przekierować na stronę sukcesu w React,
+            // a React następnie wywoła /api/auth/me, aby pobrać dane użytkownika.
+            // LUB zwrócić tu dane użytkownika, jeśli frontend potrafi to obsłużyć.
+            // Najprościej jest przekierować.
+            var frontendSuccessUrl = _configuration["FrontendUrls:LoginSuccess"] ?? "https://localhost:5173/"; // Odczytaj z konfiguracji
+            if (!string.IsNullOrEmpty(returnUrl) && Url.IsLocalUrl(returnUrl)) // Jeśli był returnUrl z oryginalnego żądania external-login
+            {
+                frontendSuccessUrl = returnUrl;
+            }
+            return Redirect(frontendSuccessUrl);
+            // Alternatywnie, jeśli frontend potrafi obsłużyć bezpośrednią odpowiedź z tego callbacku:
+            //return Ok(new UserProfileDto { Id = user.Id, Username = user.Username, Email = user.Email });
         }
     }
 }

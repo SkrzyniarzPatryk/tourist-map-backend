@@ -94,7 +94,8 @@ namespace Backend_Development_Lab.Controllers
             {
                 Id = newUser.Id,
                 Username = newUser.Username,
-                Email = newUser.Email
+                Email = newUser.Email,
+                IsPremium = newUser.IsPremium
             });
         }
 
@@ -128,7 +129,8 @@ namespace Backend_Development_Lab.Controllers
             {
                 Id = user.Id,
                 Username = user.Username,
-                Email = user.Email
+                Email = user.Email,
+                IsPremium = user.IsPremium
             });
         }
 
@@ -174,7 +176,8 @@ namespace Backend_Development_Lab.Controllers
             {
                 Id = user.Id,
                 Username = user.Username,
-                Email = user.Email
+                Email = user.Email,
+                IsPremium = user.IsPremium
             });
         }
 

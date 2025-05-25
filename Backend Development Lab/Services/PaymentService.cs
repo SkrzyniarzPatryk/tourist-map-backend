@@ -1,134 +1,101 @@
-﻿using Backend_Development_Lab.Models;
-using Microsoft.Extensions.Configuration;
-using System.Collections.Concurrent;
-using System.Net.Http.Headers;
-using System.Net.Http;
+﻿using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Text;
 using Backend_Development_Lab.Interfaces;
+using tourist_map_backend.Data;
+using Microsoft.EntityFrameworkCore;
+using tourist_map_backend.Entities;
 
 namespace Backend_Development_Lab.Services
 {
-    public class PaymentService :IPaymentService
+    public class PaymentService : IPaymentService
     {
         private readonly IConfiguration _configuration;
         private readonly HttpClient _httpClient;
+        private readonly ApplicationDbContext _dbContext; // Wstrzyknij DbContext
         private readonly string _payPalApiBaseUrl;
         private readonly string _payPalClientId;
         private readonly string _payPalClientSecret;
 
-        // Przechowywanie zamówień w pamięci (dla uproszczenia)
-        private static readonly ConcurrentDictionary<Guid, Order> _orders = new ConcurrentDictionary<Guid, Order>();
-        private static readonly ConcurrentDictionary<string, Guid> _payPalOrderIdIndex = new ConcurrentDictionary<string, Guid>();
+        // Definicje produktów (można przenieść do konfiguracji lub bazy danych)
+        private static readonly Dictionary<string, (decimal Amount, string Currency, string Description)> _productDefinitions =
+            new Dictionary<string, (decimal, string, string)>(StringComparer.OrdinalIgnoreCase)
+            {
+                { "PREMIUM", (Amount: 19.99m, Currency: "PLN", Description: "Subskrypcja Premium") }
+                // Możesz dodać inne produkty
+            };
 
-
-        public PaymentService(IConfiguration configuration, IHttpClientFactory httpClientFactory)
+        public PaymentService(IConfiguration configuration, IHttpClientFactory httpClientFactory, ApplicationDbContext dbContext)
         {
             _configuration = configuration;
-            _httpClient = httpClientFactory.CreateClient("PayPalApiClient"); // Nazwany klient HttpClient
+            _httpClient = httpClientFactory.CreateClient("PayPalApiClient");
+            _dbContext = dbContext; // Przypisz wstrzyknięty DbContext
 
-            // Odczytaj konfigurację PayPal z appsettings lub User Secrets
-            _payPalApiBaseUrl = _configuration["PayPal:ApiBaseUrl"] ?? "https://api-m.sandbox.paypal.com"; // Domyślnie sandbox
+            _payPalApiBaseUrl = _configuration["PayPal:ApiBaseUrl"] ?? "https://api-m.sandbox.paypal.com";
             _payPalClientId = _configuration["PayPal:ClientId"] ?? throw new InvalidOperationException("PayPal ClientId not configured");
             _payPalClientSecret = _configuration["PayPal:ClientSecret"] ?? throw new InvalidOperationException("PayPal ClientSecret not configured");
         }
 
-        // --- Zarządzanie lokalnymi zamówieniami (In-Memory) ---
-        public Task<Order?> GetOrderByIdAsync(Guid orderId)
-        {
-            _orders.TryGetValue(orderId, out var order);
-            return Task.FromResult(order);
-        }
-        public Task<Order?> GetOrderByPayPalIdAsync(string payPalOrderId)
-        {
-            if (_payPalOrderIdIndex.TryGetValue(payPalOrderId, out Guid internalId))
-            {
-                _orders.TryGetValue(internalId, out var order);
-                return Task.FromResult(order);
-            }
-            return Task.FromResult<Order?>(null);
-        }
-
-        public void AddOrder(Order order)
-        {
-            _orders.TryAdd(order.Id, order);
-            if (!string.IsNullOrEmpty(order.PayPalOrderId))
-            {
-                _payPalOrderIdIndex.TryAdd(order.PayPalOrderId, order.Id);
-            }
-        }
-
-        public void UpdateOrder(Order order)
-        {
-            if (_orders.ContainsKey(order.Id))
-            {
-                _orders[order.Id] = order;
-                if (!string.IsNullOrEmpty(order.PayPalOrderId) && !_payPalOrderIdIndex.ContainsKey(order.PayPalOrderId))
-                {
-                    _payPalOrderIdIndex.TryAdd(order.PayPalOrderId, order.Id);
-                }
-            }
-        }
-
-
-        // --- Interakcja z PayPal API ---
         private async Task<string?> GetPayPalAccessTokenAsync()
         {
             var request = new HttpRequestMessage(HttpMethod.Post, $"{_payPalApiBaseUrl}/v1/oauth2/token");
             request.Headers.Authorization = new AuthenticationHeaderValue("Basic",
                 Convert.ToBase64String(Encoding.UTF8.GetBytes($"{_payPalClientId}:{_payPalClientSecret}")));
-
             var content = new StringContent("grant_type=client_credentials", Encoding.UTF8, "application/x-www-form-urlencoded");
             request.Content = content;
-
             var response = await _httpClient.SendAsync(request);
-
             if (response.IsSuccessStatusCode)
             {
                 var authResponse = await response.Content.ReadFromJsonAsync<PayPalAuthResponse>();
                 return authResponse?.access_token;
             }
-            // Log error
             Console.WriteLine($"Error getting PayPal access token: {response.StatusCode} - {await response.Content.ReadAsStringAsync()}");
             return null;
         }
 
-        public async Task<(Order? order, string? approvalUrl, string? errorMessage)> CreatePayPalOrderAsync(decimal amount, string currency, string description, string returnUrl, string cancelUrl)
+        public async Task<(Order? order, string? approvalUrl, string? errorMessage)> CreatePayPalOrderAsync(Guid userId, string productName, string returnUrl, string cancelUrl)
         {
+            if (!_productDefinitions.TryGetValue(productName, out var productInfo))
+            {
+                return (null, null, $"Product '{productName}' not found or not configured.");
+            }
+
             var accessToken = await GetPayPalAccessTokenAsync();
             if (string.IsNullOrEmpty(accessToken))
             {
                 return (null, null, "Failed to authenticate with PayPal.");
             }
 
-            // Utwórz nasze wewnętrzne zamówienie
             var internalOrder = new Order
             {
-                Amount = amount,
-                Currency = currency,
-                Description = description,
+                UserId = userId,
+                Amount = productInfo.Amount,
+                Currency = productInfo.Currency,
+                Description = productInfo.Description,
                 Status = OrderStatus.Pending
             };
-            AddOrder(internalOrder); // Zapisz w pamięci
+
+            _dbContext.Orders.Add(internalOrder); // Dodaj do DbContext
+            // Na razie nie zapisujemy - zapiszemy razem z PayPalOrderId lub w razie błędu
 
 
             var payPalOrderRequest = new
             {
-                intent = "CAPTURE", // CAPTURE lub AUTHORIZE
+                intent = "CAPTURE",
                 purchase_units = new[]
                 {
-                        new
-                        {
-                            amount = new { currency_code = currency, value = amount.ToString("F2").Replace(',','.') }, // Formatuj kwotę na 2 miejsca po przecinku
-                            description = description
-                        }
-                    },
+                    new
+                    {
+                        amount = new { currency_code = internalOrder.Currency, value = internalOrder.Amount.ToString("F2").Replace(',','.') },
+                        description = internalOrder.Description
+                    }
+                },
                 application_context = new
                 {
                     return_url = returnUrl,
                     cancel_url = cancelUrl,
-                    brand_name = "Moja Aplikacja Sklep", // Opcjonalnie
-                    user_action = "PAY_NOW" // Tekst na przycisku PayPal
+                    brand_name = _configuration["PayPal:BrandName"] ?? "Moja Aplikacja",
+                    user_action = "PAY_NOW"
                 }
             };
 
@@ -137,58 +104,48 @@ namespace Backend_Development_Lab.Services
             request.Content = new StringContent(JsonSerializer.Serialize(payPalOrderRequest), Encoding.UTF8, "application/json");
 
             var response = await _httpClient.SendAsync(request);
-            var responseContent = await response.Content.ReadAsStringAsync(); // Odczytaj zawartość odpowiedzi
+            var responseContent = await response.Content.ReadAsStringAsync();
 
             if (response.IsSuccessStatusCode)
             {
                 var payPalOrderResponse = JsonSerializer.Deserialize<PayPalOrderResponse>(responseContent);
                 if (payPalOrderResponse != null && !string.IsNullOrEmpty(payPalOrderResponse.id))
                 {
-                    // Zaktualizuj nasze wewnętrzne zamówienie o PayPalOrderId
                     internalOrder.PayPalOrderId = payPalOrderResponse.id;
-                    internalOrder.Status = OrderStatus.Processing; // Zmieniamy status, bo zamówienie zostało utworzone w PayPal
-                    UpdateOrder(internalOrder);
+                    internalOrder.Status = OrderStatus.Processing;
+                    await _dbContext.SaveChangesAsync(); // Zapisz zamówienie z PayPalOrderId
 
                     var approvalLink = payPalOrderResponse.links?.FirstOrDefault(l => l.rel == "approve");
-                    if (approvalLink != null)
-                    {
-                        return (internalOrder, approvalLink.href, null);
-                    }
-                    return (internalOrder, null, "Approval link not found in PayPal response.");
+                    return (internalOrder, approvalLink?.href, approvalLink == null ? "Approval link not found." : null);
                 }
-                return (internalOrder, null, $"Failed to parse PayPal order ID from response: {responseContent}");
+                // Nie zapisuj zamówienia, jeśli nie udało się uzyskać PayPalOrderId
+                return (null, null, $"Failed to parse PayPal order ID from response: {responseContent}");
             }
+            // Nie zapisuj zamówienia, jeśli wystąpił błąd z PayPal
             Console.WriteLine($"Error creating PayPal order: {response.StatusCode} - {responseContent}");
-            return (internalOrder, null, $"Error creating PayPal order: {response.StatusCode} - {responseContent}");
+            return (null, null, $"Error creating PayPal order: {response.StatusCode}");
         }
 
         public async Task<Order?> CapturePayPalOrderAsync(string payPalOrderId)
         {
             var accessToken = await GetPayPalAccessTokenAsync();
-            if (string.IsNullOrEmpty(accessToken))
-            {
-                // Log error
-                return null;
-            }
+            if (string.IsNullOrEmpty(accessToken)) return null;
 
-            var internalOrder = await GetOrderByPayPalIdAsync(payPalOrderId);
+            var internalOrder = await _dbContext.Orders
+                                        .Include(o => o.User) // Dołącz użytkownika, aby móc go zaktualizować
+                                        .FirstOrDefaultAsync(o => o.PayPalOrderId == payPalOrderId);
+
             if (internalOrder == null)
             {
                 Console.WriteLine($"Internal order not found for PayPal Order ID: {payPalOrderId}");
-                return null; // Nie znaleziono zamówienia
+                return null;
             }
 
-            // Sprawdź, czy zamówienie nie zostało już przechwycone
-            if (internalOrder.Status == OrderStatus.Completed || internalOrder.Status == OrderStatus.Failed)
-            {
-                Console.WriteLine($"Order {payPalOrderId} already processed. Status: {internalOrder.Status}");
-                return internalOrder; // Już przetworzone
-            }
-
+            if (internalOrder.Status == OrderStatus.Completed) return internalOrder; // Już przetworzone
 
             var request = new HttpRequestMessage(HttpMethod.Post, $"{_payPalApiBaseUrl}/v2/checkout/orders/{payPalOrderId}/capture");
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
-            request.Content = new StringContent("{}", Encoding.UTF8, "application/json"); // Puste ciało dla capture
+            request.Content = new StringContent("{}", Encoding.UTF8, "application/json");
 
             var response = await _httpClient.SendAsync(request);
             var responseContent = await response.Content.ReadAsStringAsync();
@@ -196,36 +153,46 @@ namespace Backend_Development_Lab.Services
             if (response.IsSuccessStatusCode)
             {
                 var captureResponse = JsonSerializer.Deserialize<PayPalCaptureResponse>(responseContent);
-                // Sprawdź status w odpowiedzi PayPal
                 if (captureResponse?.status == "COMPLETED")
                 {
                     internalOrder.Status = OrderStatus.Completed;
                     internalOrder.UpdatedAt = DateTime.UtcNow;
-                    UpdateOrder(internalOrder);
+
+                    // AKTUALIZACJA STATUSU UŻYTKOWNIKA
+                    if (internalOrder.User != null)
+                    {
+                        internalOrder.User.IsPremium = true;
+                        _dbContext.Users.Update(internalOrder.User); // Oznacz użytkownika jako zmodyfikowanego
+                    }
+                    await _dbContext.SaveChangesAsync(); // Zapisz zmiany w zamówieniu i użytkowniku
                     return internalOrder;
                 }
                 else
                 {
-                    internalOrder.Status = OrderStatus.Failed; // Lub inny status błędu na podstawie odpowiedzi
-                    internalOrder.UpdatedAt = DateTime.UtcNow;
-                    UpdateOrder(internalOrder);
-                    Console.WriteLine($"PayPal capture status for {payPalOrderId} was not COMPLETED: {captureResponse?.status} - {responseContent}");
-                    return internalOrder; // Zwróć zamówienie ze zaktualizowanym statusem błędu
+                    internalOrder.Status = OrderStatus.Failed;
+                    Console.WriteLine($"PayPal capture status for {payPalOrderId} was not COMPLETED: {captureResponse?.status}");
                 }
             }
             else
             {
                 internalOrder.Status = OrderStatus.Failed;
-                internalOrder.UpdatedAt = DateTime.UtcNow;
-                UpdateOrder(internalOrder);
                 Console.WriteLine($"Error capturing PayPal order {payPalOrderId}: {response.StatusCode} - {responseContent}");
-                return internalOrder; // Zwróć zamówienie ze zaktualizowanym statusem błędu
             }
+
+            internalOrder.UpdatedAt = DateTime.UtcNow;
+            await _dbContext.SaveChangesAsync(); // Zapisz status błędu
+            return internalOrder;
         }
 
-        public Task<Order[]> GetOrders()
+
+        public async Task<Order?> GetOrderByIdAsync(Guid orderId)
         {
-            return Task.FromResult(_orders.Values.ToArray());
+            return await _dbContext.Orders.Include(o => o.User).FirstOrDefaultAsync(o => o.Id == orderId);
+        }
+
+        public async Task<Order?> GetOrderByPayPalIdAsync(string payPalOrderId)
+        {
+            return await _dbContext.Orders.Include(o => o.User).FirstOrDefaultAsync(o => o.PayPalOrderId == payPalOrderId);
         }
     }
 

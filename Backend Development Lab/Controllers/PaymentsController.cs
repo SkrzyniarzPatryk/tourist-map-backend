@@ -1,7 +1,12 @@
-﻿using Backend_Development_Lab.Dtos;
+﻿using System.ComponentModel.DataAnnotations;
+using System.Security.Claims;
+using Backend_Development_Lab.Dtos;
 using Backend_Development_Lab.Interfaces;
-using Backend_Development_Lab.Models;
+using Backend_Development_Lab.Services;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using tourist_map_backend.Data;
+using tourist_map_backend.Entities;
 
 namespace Backend_Development_Lab.Controllers
 {
@@ -10,37 +15,44 @@ namespace Backend_Development_Lab.Controllers
     public class PaymentsController : ControllerBase
     {
         private readonly IPaymentService _paymentService;
-        private readonly ILogger<PaymentsController> _logger; // Do logowania
+        private readonly ILogger<PaymentsController> _logger;
+        private readonly IConfiguration _configuration; // Do odczytu URL-i frontendu
+        private readonly ApplicationDbContext _dbContext; // Zakładam, że masz DbContext do komunikacji z bazą danych
 
-        public PaymentsController(IPaymentService paymentService, ILogger<PaymentsController> logger)
+        public PaymentsController(IPaymentService paymentService, ILogger<PaymentsController> logger, IConfiguration configuration, ApplicationDbContext dbContext)
         {
             _paymentService = paymentService;
             _logger = logger;
+            _configuration = configuration;
+            _dbContext = dbContext;
         }
 
         // 1. Endpoint inicjujący płatność
-        [HttpPost("create")]
-        public async Task<IActionResult> CreatePayment([FromBody] CreatePaymentRequestDto requestDto)
+        [HttpPost("create-order")] // Zmieniona nazwa, aby było jasne
+        [Authorize] // Wymaga zalogowanego użytkownika
+        public async Task<IActionResult> CreatePaymentOrder([FromBody] CreatePaymentRequestDto requestDto)
         {
             if (!ModelState.IsValid)
             {
                 return BadRequest(ModelState);
             }
 
-            // URL-e powrotu do Twojej aplikacji
-            // WAŻNE: Muszą być publicznie dostępne, jeśli PayPal ma na nie przekierować.
-            // Dla testów lokalnych z np. ngrok lub bezpośrednio jeśli masz publiczny IP.
-            // W tym scenariuszu, gdzie klient sam sprawdza, mogą to być ścieżki w Twoim SPA.
-            string baseUrl = $"{Request.Scheme}://{Request.Host}";
-            string returnUrl = $"{baseUrl}/api/payments/success"; // Endpoint, który obsłuży sukces
-            string cancelUrl = $"{baseUrl}/api/payments/cancel";   // Endpoint, który obsłuży anulowanie
+            var userIdString = User.FindFirstValue(ClaimTypes.NameIdentifier); // Pobierz ID zalogowanego użytkownika
+            if (string.IsNullOrEmpty(userIdString) || !Guid.TryParse(userIdString, out Guid userId))
+            {
+                return Unauthorized("User ID not found in token.");
+            }
 
-            _logger.LogInformation($"Creating PayPal order. Amount: {requestDto.Amount} {requestDto.Currency}. Return: {returnUrl}, Cancel: {cancelUrl}");
+            // URL-e powrotu do Twojej aplikacji frontendowej (React)
+            string frontendBaseUrl = _configuration["FrontendUrls:BaseUrl"] ?? "http://localhost:5173"; // Odczytaj z konfiguracji
+            string returnUrl = $"{frontendBaseUrl}/user-profile?status=success"; // Ścieżka w React
+            string cancelUrl = $"{frontendBaseUrl}/user-profile?status=failure";  // Ścieżka w React
+
+            _logger.LogInformation($"Creating PayPal order for user {userId}, product: {requestDto.ProductName}. Return: {returnUrl}, Cancel: {cancelUrl}");
 
             var (order, approvalUrl, errorMessage) = await _paymentService.CreatePayPalOrderAsync(
-                requestDto.Amount,
-                requestDto.Currency,
-                requestDto.Description ?? "Zakup w Mojej Aplikacji",
+                userId,
+                requestDto.ProductName, // Przekazujemy nazwę produktu
                 returnUrl,
                 cancelUrl);
 
@@ -50,7 +62,7 @@ namespace Backend_Development_Lab.Controllers
                 return StatusCode(StatusCodes.Status500InternalServerError, new { message = "Failed to create payment order.", error = errorMessage });
             }
 
-            _logger.LogInformation($"PayPal order created. Internal ID: {order.Id}, PayPal ID: {order.PayPalOrderId}, Approval URL: {approvalUrl}");
+            _logger.LogInformation($"PayPal order created for user {userId}. Internal ID: {order.Id}, PayPal ID: {order.PayPalOrderId}, Approval URL: {approvalUrl}");
 
             return Ok(new CreatePaymentResponseDto
             {
@@ -60,149 +72,109 @@ namespace Backend_Development_Lab.Controllers
             });
         }
 
-        // 2. Endpoint obsługujący pomyślne przekierowanie z PayPal
-        //    Użytkownik jest tu przekierowywany PO dokonaniu płatności w PayPal.
-        //    Tutaj odpytujemy PayPal o status płatności (capture).
-        [HttpGet("success")] // Lub inny URL skonfigurowany jako return_url
-        public async Task<IActionResult> PaymentSuccess([FromQuery] string token, [FromQuery(Name = "PayerID")] string payerId)
+        // 2. Endpoint, który frontend wywoła po pomyślnym powrocie z PayPal
+        //    Użytkownik jest przekierowywany przez PayPal na /payment-success w React,
+        //    a React następnie wywołuje ten endpoint.
+        [HttpPost("capture-order")]
+        [Authorize] // Wymaga zalogowanego użytkownika (tego samego, który inicjował)
+        public async Task<IActionResult> CapturePaymentOrder([FromBody] CaptureOrderRequestDto captureRequestDto)
         {
-            // 'token' z query string to PayPal Order ID (w nowszym API PayPal)
-            // 'PayerID' jest również zwracany przez PayPal
-            _logger.LogInformation($"Payment success callback. PayPal Order ID (token): {token}, PayerID: {payerId}");
+            // CaptureOrderRequestDto to proste DTO z PayPalOrderId
+            // public class CaptureOrderRequestDto { public string PayPalOrderId { get; set; } }
 
-            if (string.IsNullOrEmpty(token))
+            if (string.IsNullOrEmpty(captureRequestDto.PayPalOrderId))
             {
-                _logger.LogWarning("PaymentSuccess: PayPal Order ID (token) is missing.");
-                // Zwróć użytkownika na stronę błędu lub odpowiedni widok w SPA
-                return BadRequest("Payment confirmation failed: Missing PayPal Order ID.");
+                _logger.LogWarning("CapturePaymentOrder: PayPal Order ID is missing in request body.");
+                return BadRequest("PayPal Order ID is required.");
             }
 
-            Order? capturedOrder = await _paymentService.CapturePayPalOrderAsync(token);
+            // Opcjonalnie: Sprawdź, czy zalogowany użytkownik jest właścicielem tego PayPalOrderId
+            // (wymagałoby pobrania zamówienia i porównania UserId)
+            var userIdString = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (string.IsNullOrEmpty(userIdString) || !Guid.TryParse(userIdString, out Guid currentUserId))
+            {
+                return Unauthorized("User ID not found in token.");
+            }
+
+            _logger.LogInformation($"Attempting to capture PayPal order: {captureRequestDto.PayPalOrderId} for user: {currentUserId}");
+
+            Order? capturedOrder = await _paymentService.CapturePayPalOrderAsync(captureRequestDto.PayPalOrderId);
 
             if (capturedOrder == null)
             {
-                _logger.LogError($"PaymentSuccess: Failed to capture or find order for PayPal Order ID: {token}");
-                // Zwróć użytkownika na stronę błędu
-                return StatusCode(StatusCodes.Status500InternalServerError, "Error processing payment after confirmation.");
+                _logger.LogError($"CapturePaymentOrder: Failed to capture or find order for PayPal Order ID: {captureRequestDto.PayPalOrderId}");
+                return StatusCode(StatusCodes.Status500InternalServerError, new { message = "Error processing payment after confirmation." });
+            }
+
+            // Sprawdzenie, czy użytkownik z tokenu zgadza się z użytkownikiem zamówienia
+            if (capturedOrder.UserId != currentUserId)
+            {
+                _logger.LogWarning($"User {currentUserId} attempted to capture order {capturedOrder.Id} belonging to user {capturedOrder.UserId}.");
+                return Forbid("You are not authorized to capture this order.");
             }
 
             if (capturedOrder.Status == OrderStatus.Completed)
             {
-                _logger.LogInformation($"Payment completed successfully for PayPal Order ID: {token}, Internal Order ID: {capturedOrder.Id}");
-                // Tutaj logika po udanej płatności, np.:
-                // - Przekieruj użytkownika na stronę podsumowania zamówienia w Twojej aplikacji
-                // - Wyświetl komunikat o sukcesie
-                // W kontekście API, możemy zwrócić dane zamówienia
-                return Ok(new { message = "Payment completed successfully!", orderId = capturedOrder.Id, payPalOrderId = capturedOrder.PayPalOrderId, status = capturedOrder.Status });
+                _logger.LogInformation($"Payment completed successfully for PayPal Order ID: {capturedOrder.PayPalOrderId}, Internal Order ID: {capturedOrder.Id}. User {capturedOrder.UserId} is now premium: {capturedOrder.User?.IsPremium}");
+                return Ok(new { transactionStatus = "confirmed", message = "Payment completed successfully! Your account is now Premium.", orderId = capturedOrder.Id, status = capturedOrder.Status, isPremium = capturedOrder.User?.IsPremium });
             }
             else
             {
-                _logger.LogWarning($"Payment for PayPal Order ID: {token} was not completed successfully after capture. Status: {capturedOrder.Status}");
-                // Płatność mogła się nie powieść na etapie capture lub miała inny status
-                // Zwróć użytkownika na stronę z informacją o problemie
-                return BadRequest(new { message = "Payment was not completed successfully.", orderId = capturedOrder.Id, status = capturedOrder.Status });
+                _logger.LogWarning($"Payment for PayPal Order ID: {capturedOrder.PayPalOrderId} was not completed successfully after capture. Status: {capturedOrder.Status}");
+                return BadRequest(new { message = "Payment was not completed successfully.", orderId = capturedOrder.Id, status = capturedOrder.Status, isPremium = capturedOrder.User?.IsPremium });
             }
         }
 
-
-        // 3. Endpoint obsługujący anulowanie płatności przez użytkownika w PayPal
-        [HttpGet("cancel")] // Lub inny URL skonfigurowany jako cancel_url
-        public async Task<IActionResult> PaymentCancel([FromQuery] string token)
+        // 3. Endpoint, który frontend może wywołać po anulowaniu płatności w PayPal
+        [HttpPost("order-cancelled")]
+        [Authorize]
+        public async Task<IActionResult> PaymentOrderCancelled([FromBody] CancelOrderRequestDto cancelRequestDto)
         {
-            // 'token' z query string to PayPal Order ID
-            _logger.LogInformation($"Payment cancelled by user. PayPal Order ID (token): {token}");
-
-            if (string.IsNullOrEmpty(token))
+            // public class CancelOrderRequestDto { public string PayPalOrderId { get; set; } }
+            if (string.IsNullOrEmpty(cancelRequestDto.PayPalOrderId))
             {
-                _logger.LogWarning("PaymentCancel: PayPal Order ID (token) is missing.");
-                return BadRequest("Payment cancellation information is incomplete.");
+                _logger.LogWarning("PaymentOrderCancelled: PayPal Order ID is missing.");
+                return BadRequest("PayPal Order ID is required.");
             }
 
-            // Znajdź zamówienie w naszej bazie i oznacz je jako anulowane
-            var order = await _paymentService.GetOrderByPayPalIdAsync(token);
+            var order = await _paymentService.GetOrderByPayPalIdAsync(cancelRequestDto.PayPalOrderId);
             if (order != null)
             {
-                if (order.Status != OrderStatus.Completed) // Nie zmieniaj statusu, jeśli już zapłacone
+                // Sprawdź, czy zalogowany użytkownik jest właścicielem zamówienia
+                var userIdString = User.FindFirstValue(ClaimTypes.NameIdentifier);
+                if (Guid.TryParse(userIdString, out Guid currentUserId) && order.UserId == currentUserId)
                 {
-                    order.Status = OrderStatus.Cancelled;
-                    order.UpdatedAt = DateTime.UtcNow;
-                    _paymentService.UpdateOrder(order); // Załóżmy, że serwis ma metodę UpdateOrder
-                    _logger.LogInformation($"Internal order {order.Id} (PayPal ID: {token}) marked as Cancelled.");
+                    if (order.Status != OrderStatus.Completed && order.Status != OrderStatus.Refunded)
+                    {
+                        order.Status = OrderStatus.Cancelled;
+                        order.UpdatedAt = DateTime.UtcNow;
+                        // _dbContext.Orders.Update(order); // Jeśli PaymentService nie robi SaveChanges
+                        await _dbContext.SaveChangesAsync(); // Bezpośrednio lub przez serwis
+                        _logger.LogInformation($"Internal order {order.Id} (PayPal ID: {cancelRequestDto.PayPalOrderId}) marked as Cancelled by user {currentUserId}.");
+                        return Ok(new { message = "Payment was cancelled.", payPalOrderId = cancelRequestDto.PayPalOrderId, status = order.Status });
+                    }
+                    return Ok(new { message = "Order already processed.", payPalOrderId = cancelRequestDto.PayPalOrderId, status = order.Status });
+                }
+                else
+                {
+                    return Forbid("You are not authorized to cancel this order.");
                 }
             }
-            else
-            {
-                _logger.LogWarning($"PaymentCancel: Could not find internal order for PayPal ID {token} to mark as cancelled.");
-            }
-
-            // Przekieruj użytkownika na odpowiednią stronę w Twojej aplikacji (np. koszyk)
-            // W kontekście API, możemy zwrócić informację
-            return Ok(new { message = "Payment was cancelled by the user.", payPalOrderId = token });
+            _logger.LogWarning($"PaymentOrderCancelled: Could not find internal order for PayPal ID {cancelRequestDto.PayPalOrderId}.");
+            return NotFound(new { message = "Order not found." });
         }
+    }
 
-        [HttpGet("orders")] // Lub inny URL skonfigurowany jako cancel_url
-        public async Task<IActionResult> GetOrders()
-        {
-            // Znajdź zamówienia w naszej bazie i oznacz je jako anulowane
-            var orders = await _paymentService.GetOrders();
-            if (orders != null)
-            {
-                return Ok(orders);
-            }
-            else
-            {
-                _logger.LogWarning($"GetOrders: Could not find internal order for PayPal ID to mark as cancelled.");
-                return NotFound("No orders found.");
-            }
-        }
+    // Dodaj te DTOs (np. w PaymentDtos.cs lub nowym pliku)
+    public class CaptureOrderRequestDto
+    {
+        [Required]
+        public required string PayPalOrderId { get; set; }
+    }
 
-        [HttpPost("orders/{orderId}/update")] // Endpoint do ręcznego przechwytywania płatności
-        public async Task<IActionResult> UpdatePayment([FromRoute] Guid orderId, [FromBody] OrderStatus status )
-        {
-            var order = await _paymentService.GetOrderByIdAsync(orderId);
-            if (order != null)
-            {
-               order.Status = status;
-               var orderV2 = await _paymentService.GetOrderByIdAsync(orderId);
-               return Ok(orderV2);
-            }
-            else
-            {
-                return NotFound("Order not found.");
-            }
-        }
-
-        // Endpoint do symulacji Webhooka (Uproszczona wersja, NIEBEZPIECZNA bez walidacji)
-        // W tym podejściu (bez prawdziwych webhooków) ten endpoint jest mniej potrzebny,
-        // bo status sprawdzamy w "success" i "cancel".
-        // Jeśli miałby być używany, MUSI być zabezpieczony.
-        // [HttpPost("webhook")]
-        // public async Task<IActionResult> PayPalWebhook([FromBody] object payload)
-        // {
-        //     _logger.LogInformation("PayPal Webhook received.");
-        //     // BARDZO WAŻNE: Weryfikacja podpisu webhooka od PayPal jest tutaj pominięta dla uproszczenia!
-        //     // W produkcji jest to absolutnie krytyczne dla bezpieczeństwa.
-        //     // https://developer.paypal.com/docs/api/webhooks/v1/#verify-webhook-signature
-
-        //     // Tutaj przetwarzanie payloadu webhooka i aktualizacja statusu zamówienia
-        //     // np. odczytanie event_type, resource.id (PayPal Order ID)
-        //     // var payPalOrderId = ...;
-        //     // var eventType = ...;
-        //     // if (eventType == "CHECKOUT.ORDER.APPROVED" || eventType == "PAYMENT.CAPTURE.COMPLETED")
-        //     // {
-        //     //    var order = await _paymentService.GetOrderByPayPalIdAsync(payPalOrderId);
-        //     //    if (order != null && order.Status != OrderStatus.Completed)
-        //     //    {
-        //     //        var capturedOrder = await _paymentService.CapturePayPalOrderAsync(payPalOrderId); // Można by też od razu oznaczyć jako Completed
-        //     //        // ... obsłuż wynik capture ...
-        //     //    }
-        //     // }
-        //     // else if (eventType == "PAYMENT.CAPTURE.DENIED" || eventType == "CHECKOUT.ORDER.VOIDED")
-        //     // { /* ... obsłuż błąd ... */ }
-
-
-        //     _logger.LogInformation($"Webhook payload: {JsonSerializer.Serialize(payload)}");
-        //     return Ok();
-        // }
+    public class CancelOrderRequestDto
+    {
+        [Required]
+        public required string PayPalOrderId { get; set; }
     }
 }

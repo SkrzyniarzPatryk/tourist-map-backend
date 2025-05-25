@@ -67,7 +67,8 @@ public class UserService : IUserService
             Email = email,
             PasswordHash = passwordHash,
             ExternalProvider = externalProvider,
-            ExternalId = externalId
+            ExternalId = externalId,
+            IsPremium = false
         };
 
         _context.Users.Add(newUser);

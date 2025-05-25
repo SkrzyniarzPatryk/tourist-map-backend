@@ -9,6 +9,12 @@ using Microsoft.AspNetCore.Authentication.Google;
 using Microsoft.Extensions.Options;
 using Microsoft.EntityFrameworkCore;
 using tourist_map_backend.Data;
+using tourist_map_backend.Services; // Dodaj using dla serwisu
+using tourist_map_backend.Data;     // Dodaj using dla DbContext
+using Microsoft.EntityFrameworkCore;
+using tourist_map_backend.Interfaces; // Dla AddDbContext
+
+
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -199,6 +205,8 @@ builder.Services.AddAuthorization();
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection") ?? throw new InvalidOperationException("Connection string 'DefaultConnection' not found.");
 builder.Services.AddDbContext<ApplicationDbContext>(options =>  options.UseSqlServer(connectionString));
 
+builder.Services.AddScoped<ICommentService, CommentService>();
+builder.Services.AddScoped<IPointService, PointService>();
 
 var app = builder.Build();
 

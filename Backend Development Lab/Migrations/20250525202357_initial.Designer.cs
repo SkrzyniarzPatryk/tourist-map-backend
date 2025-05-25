@@ -12,8 +12,8 @@ using tourist_map_backend.Data;
 namespace tourist_map_backend.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    [Migration("20250525193936_Point")]
-    partial class Point
+    [Migration("20250525202357_initial")]
+    partial class initial
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -55,6 +55,45 @@ namespace tourist_map_backend.Migrations
                     b.HasIndex("UserId");
 
                     b.ToTable("Comments");
+                });
+
+            modelBuilder.Entity("tourist_map_backend.Entities.Order", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<decimal>("Amount")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Currency")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("Description")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("PayPalOrderId")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId");
+
+                    b.ToTable("Orders");
                 });
 
             modelBuilder.Entity("tourist_map_backend.Entities.Point", b =>
@@ -124,6 +163,9 @@ namespace tourist_map_backend.Migrations
                     b.Property<string>("ExternalProvider")
                         .HasColumnType("nvarchar(max)");
 
+                    b.Property<bool>("IsPremium")
+                        .HasColumnType("bit");
+
                     b.Property<string>("PasswordHash")
                         .HasColumnType("nvarchar(max)");
 
@@ -148,6 +190,17 @@ namespace tourist_map_backend.Migrations
                     b.Navigation("User");
                 });
 
+            modelBuilder.Entity("tourist_map_backend.Entities.Order", b =>
+                {
+                    b.HasOne("tourist_map_backend.Entities.User", "User")
+                        .WithMany("Orders")
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("User");
+                });
+
             modelBuilder.Entity("tourist_map_backend.Entities.Point", b =>
                 {
                     b.HasOne("tourist_map_backend.Entities.User", "User")
@@ -157,6 +210,11 @@ namespace tourist_map_backend.Migrations
                         .IsRequired();
 
                     b.Navigation("User");
+                });
+
+            modelBuilder.Entity("tourist_map_backend.Entities.User", b =>
+                {
+                    b.Navigation("Orders");
                 });
 #pragma warning restore 612, 618
         }
